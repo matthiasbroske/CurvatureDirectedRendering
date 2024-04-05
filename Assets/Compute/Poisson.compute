@@ -1,0 +1,146 @@
+#pragma kernel Initialize
+#pragma kernel SelectPoints
+#pragma kernel RemovePoints
+#pragma kernel CollapsePoints
+
+#include "Packages/com.matthias.utilities/Runtime/Compute/VolumeHelpers.hlsl"
+// _Dimensions (uint3)
+// _VoxelStartPosition (float3)
+// _VoxelSpacing (float3)
+#include "PoissonHelpers.hlsl"
+// _PoissonPoints (RWStructuredBuffer<float3>)
+#include "DispatchIndirectHelpers.hlsl"
+// _ThreadCount (uint)
+// _ThreadGroupCounterBuffer (RWStructuredBuffer<int>)
+// _PointCounterBuffer (RWStructuredBuffer<int>)
+
+uint _MaxPointsPerCell;
+uint3 _CellDimensions;
+uint _Phase;
+float _RSqr;
+
+StructuredBuffer<uint> _SurfacePointsCount;
+StructuredBuffer<float3> _SurfacePoints;
+RWStructuredBuffer<int> _PointsByCell;
+RWStructuredBuffer<int> _Cells;
+
+#define EMPTY -1
+
+uint CellIdx(uint3 i)
+{
+    return i.x + i.y * _CellDimensions.x + i.z * _CellDimensions.x * _CellDimensions.y;
+}
+
+uint PointsByCellIdx(uint3 cellId, uint i)
+{
+    return i + cellId.x * _MaxPointsPerCell + cellId.y * _CellDimensions.x * _MaxPointsPerCell + cellId.z * _CellDimensions.x * _CellDimensions.y * _MaxPointsPerCell;
+}
+
+uint3 RemapUVWToCellID(float3 uvw)
+{
+    return floor(uvw * (_CellDimensions-1));
+}
+
+// Initialize by setting all cells to EMPTY
+[numthreads(4,4,4)]
+void Initialize (uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= _CellDimensions)) return;
+
+    _Cells[CellIdx(id)] = EMPTY;
+    
+    for (uint i = 0; i < _MaxPointsPerCell; i++)
+    {
+        _PointsByCell[PointsByCellIdx(id, i)] = EMPTY;
+    }
+}
+
+// Place points in their corresponding cells
+[numthreads(64,1,1)]
+void SelectPoints (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _SurfacePointsCount[0]) return;
+
+    // Convert point position to cell index
+    float3 position = _SurfacePoints[id.x];
+    uint3 cellId = RemapUVWToCellID(RemapPositionToUVW(position));
+    
+    // Place this point in the cell if there's room
+    for (uint i = 0; i < _MaxPointsPerCell; i++)
+    {
+        uint prev;
+        InterlockedCompareExchange(_PointsByCell[PointsByCellIdx(cellId, i)], EMPTY, id.x, prev);
+        if (prev == EMPTY) break;
+    }
+}
+
+// "Remove" points from cells such that they maintain an even spacing
+[numthreads(4,4,4)]
+void RemovePoints (uint3 id : SV_DispatchThreadID)
+{
+    uint3 cellId = id * 3 + uint3(_Phase % 3, (_Phase / 3) % 3, _Phase / 9);
+    if (any(cellId >= _CellDimensions)) return;
+
+    // Iterate through all points in this cell
+    for (uint i = 0; i < _MaxPointsPerCell; i++)
+    {
+        // Exit if no more points in this cell
+        int pointIdx = _PointsByCell[PointsByCellIdx(cellId, i)];
+        if (pointIdx == EMPTY) return;
+
+        // Get the current point
+        float3 p = _SurfacePoints[pointIdx];
+
+        bool validPoint = true;
+
+        // Check nearby cells for "collisions" with this point
+        [unroll]
+        for (int n = 0; n < 27; n++)
+        {
+            int x = n % 3 - 1;  // -1, 0, 1, -1, 0, 1 . . .
+            int y = (n / 3) % 3 - 1;  // -1, -1, -1, 0, 0, 0, 1, 1, 1
+            int z = n / 9 - 1;  // -1, -1, -1, ... 0, 0, 0, ... 1, 1, 1
+
+            if (n == 13) continue;  // (0, 0, 0)
+            
+            // Get neighbor cell index
+            uint3 neighborCellId = cellId + int3(x, y, z);
+            if (any(neighborCellId < 0) || any(neighborCellId >= _CellDimensions)) continue;
+            uint neighborCellIdx = CellIdx(neighborCellId);
+            
+            // Check if neighbor cell contains a point
+            int neighborPointIdx = _Cells[neighborCellIdx];
+            if (neighborPointIdx == EMPTY) continue;
+            
+            // If current point is too close we should give up early and try a new point
+            float3 v = p - _SurfacePoints[neighborPointIdx];
+            if (dot(v, v) < _RSqr)
+            {
+                validPoint = false;
+                break;
+            }
+        }
+
+        if (validPoint)
+        {
+            _Cells[CellIdx(cellId)] = pointIdx;
+            return;
+        }
+    }
+}
+
+// Collapse the sparse 3D point grid into a 1D array
+[numthreads(4,4,4)]
+void CollapsePoints (uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= _CellDimensions)) return;
+
+    // Ignore empty cells
+    int pointIdx = _Cells[CellIdx(id)];
+    if (pointIdx == EMPTY) return;
+
+    // Append the point at this cell
+    uint count = _PointCounterBuffer.IncrementCounter();
+    _PoissonPoints[count] = _SurfacePoints[pointIdx];
+    if (count % _ThreadCount == 0) _ThreadGroupCounterBuffer.IncrementCounter();
+}

@@ -1,0 +1,153 @@
+#pragma kernel MinMaxCurvature
+#pragma kernel BuildStreamline
+
+#include "DrawIndirectHelpers.hlsl"
+/// _IndirectArgs (RWStructuredBuffer<IndirectArgs>)
+#include "PoissonHelpers.hlsl"
+/// _PoissonPoints (RWStructuredBuffer<float3>)
+/// _PoissonPointsCount (StructuredBuffer<uint>)
+#include "PrincipalCurvatureHelpers.hlsl"
+/// _PrincipalCurvatures (RWStructuredBuffer<float4>)
+#include "GradientHelpers.hlsl"
+/// _Gradients (RWStructuredBuffer<float3>)
+/// _Voxels (RWStructuredBuffer<float>)
+/// _Dimensions (uin3)
+/// _VoxelSpacing (float3)
+/// _VoxelStartPosition (float3)
+#include "MinMax.hlsl"
+#include "Packages/com.matthias.utilities/Runtime/Shaders/ShaderUtilities.hlsl"
+
+bool _Taper;
+bool _ScaleWidthByCurvature;
+float _Width, _MinWidth, _MaxWidth;
+bool _ScaleLengthByCurvature;
+float _Length, _MinLength, _MaxLength;
+RWStructuredBuffer<QuantizedMinMax> _CurvatureMinMax;
+AppendStructuredBuffer<DrawTriangle> _DrawTriangles;
+
+#define NUM_THREADS 64
+
+// Build a triangle from three points and their corresponding normals
+inline DrawTriangle BuildTriangle(float3 p1, float3 p2, float3 p3, float3 n1, float3 n2, float3 n3)
+{
+    DrawTriangle tri = (DrawTriangle)0;
+    DrawVertex v1;
+    v1.positionOS = p1;
+    v1.normalOS = n1;
+    tri.vertices[0] = v1;
+    DrawVertex v2;
+    v2.positionOS = p2;
+    v2.normalOS = n2;
+    tri.vertices[1] = v2;
+    DrawVertex v3;
+    v3.positionOS = p3;
+    v3.normalOS = n3;
+    tri.vertices[2] = v3;
+    return tri;
+}
+
+// Construct a streamline
+inline void BuildStreamline(float3 prevTopPoint, float3 prevBotPoint, float3 prevPoint, float3 prevDirection, float3 prevNormal, float halfWidth, float h, float g, uint pointCount, int side = 1)
+{
+    float distanceTraced = 0;
+    float totalDistance = h * (pointCount-1) + g;
+    for (uint i = 0; i < pointCount; i++)
+    {
+        // Move along stream line projected onto surface
+        bool endPoint = (i == pointCount-1);
+        distanceTraced += endPoint ? g : h;
+        float stepScaler = endPoint ? g/h : 1;
+
+        // Trace streamline
+        float3 streamPoint = prevPoint + prevDirection * stepScaler;
+        float3 uvw = RemapPositionToUVW(streamPoint);
+        // Project back onto surface
+        float3 normal = normalize(GradientValueTrilinear(uvw));
+        float distanceFromSurface = VoxelValueTrilinear(uvw);
+        float3 projectDirection = -normal * distanceFromSurface;
+        streamPoint += projectDirection;
+        
+        // Get new directions at this point
+        float3 curvature = RK4CurvatureDirectionFromPosition(streamPoint, h, prevDirection);//  RK4CurvatureDirection(uvw, h, prevDirection);
+        float3 direction = curvature;//dot(curvature, prevDirection) >= 0 ? curvature : -curvature;
+        
+        // Save points in bitangent direction along the line
+        float taperT = _Taper ? pow(distanceTraced/totalDistance,2) : 0;
+        float lerpedHalfWidth = lerp(halfWidth, 0, taperT);
+        if (length(curvature) < 0.00001) lerpedHalfWidth = 0;
+        
+        float3 bitangent = normalize(cross(normal, direction));
+        float3 topPoint = streamPoint + bitangent * lerpedHalfWidth;
+        float3 botPoint = streamPoint - bitangent * lerpedHalfWidth;
+
+        DrawTriangle bottomTriangle = BuildTriangle(prevTopPoint, prevBotPoint, botPoint, prevNormal, prevNormal, normal);
+        DrawTriangle topTriangle = BuildTriangle(prevTopPoint, botPoint, topPoint, prevNormal, normal, normal);
+
+        _DrawTriangles.Append(bottomTriangle);
+        _DrawTriangles.Append(topTriangle);
+
+        prevTopPoint = topPoint;
+        prevBotPoint = botPoint;
+        prevPoint = streamPoint;
+        prevNormal = normal;
+        prevDirection = direction;
+    }
+}
+
+[numthreads(NUM_THREADS,1,1)]
+void MinMaxCurvature (uint id : SV_DispatchThreadID)
+{
+    // Return if no more points
+    if (id >= _PoissonPointsCount[0]) return;
+    
+    // Compute min/max curvature
+    float3 uvw = RemapPositionToUVW(_PoissonPoints[id]);
+    float curvature = PrincipalCurvatureValueTrilinear(uvw).w;
+    int quantizedCurvature = Quantize(curvature);
+    InterlockedMax(_CurvatureMinMax[0].max, quantizedCurvature);
+    InterlockedMin(_CurvatureMinMax[0].min, quantizedCurvature);
+}
+
+[numthreads(NUM_THREADS,1,1)]
+void BuildStreamline (uint pointId : SV_DispatchThreadID)
+{
+    // Return if no more points
+    if (pointId >= _PoissonPointsCount[0]) return;
+
+    // Get the start point
+    float3 startPoint = _PoissonPoints[pointId];
+    float3 uvw = RemapPositionToUVW(startPoint);
+    
+    // Determine streamline length
+    float4 curvature = PrincipalCurvatureValueTrilinear(uvw);
+    float h = _VoxelSpacing.x/4;
+    float length = _ScaleLengthByCurvature ? Remap(Quantize(curvature.w), float4((_CurvatureMinMax[0].min),(_CurvatureMinMax[0].max), _MinLength, _MaxLength)) : _Length;
+
+    // Compute number of "points" making up streamline given length and spacing
+    float sideLength = length/2;
+    uint singleSidePointCount = sideLength / h + 1; // Add one to ensure there's an endpoint no matter what
+    uint POINT_COUNT = singleSidePointCount * 2 + 1; // Add one for middle point
+    // Calculate leftover distance
+    float g = sideLength % h;
+
+    // Get starting forward/backward directions from curvature
+    float3 forwardDirection = RK4CurvatureDirectionFromPosition(startPoint, h, curvature.xyz);//RK4CurvatureDirection(startUVW, h, curvature.xyz);
+    float3 backwardDirection = -forwardDirection;
+
+    // Calculate midpoint triangle info
+    float3 startNormal = GradientValueTrilinear(uvw);
+    float3 bitangent = normalize(cross(startNormal, curvature.xyz));
+    float halfWidth = _ScaleWidthByCurvature ?
+        Remap(Quantize(curvature.w), float4((_CurvatureMinMax[0].min), (_CurvatureMinMax[0].max), _MinWidth, _MaxWidth)) * 0.5 :
+        _Width * 0.5;
+    float3 startPointTop = startPoint + bitangent * halfWidth;
+    float3 startPointBot = startPoint - bitangent * halfWidth;
+
+    // Build front/back streamlines
+    BuildStreamline(startPointTop, startPointBot, startPoint, forwardDirection, startNormal, halfWidth, h, g, POINT_COUNT / 2, 1);
+    BuildStreamline(startPointBot, startPointTop, startPoint, backwardDirection, startNormal, halfWidth, h, g, POINT_COUNT / 2, -1);
+
+    // Add args to buffer, avoiding race conditions
+    int numTris = (POINT_COUNT - 1) * 2;  // Two triangles for every strip, one strip less then point count
+    InterlockedAdd(_IndirectArgs[0].numVerticesPerInstance, numTris * 3);
+}

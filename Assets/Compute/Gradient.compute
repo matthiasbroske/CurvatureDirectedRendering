@@ -1,0 +1,15 @@
+#pragma kernel Gradient
+
+#include "GradientHelpers.hlsl"
+// _Gradients (RWStructuredBuffer<float3>)
+// _Dimensions (uint3)
+// _VoxelSpacing (float3)
+// _FlipNormals (bool)
+
+[numthreads(4, 4, 4)]
+void Gradient(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= _Dimensions)) return;
+    _Gradients[VoxelIdx(id)] = VoxelGradient(id);
+}
+

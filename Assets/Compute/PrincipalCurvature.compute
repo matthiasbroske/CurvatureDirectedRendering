@@ -1,0 +1,55 @@
+#pragma kernel PrincipalCurvature
+
+#include "GradientHelpers.hlsl"
+// _Gradients (RWStructuredBuffer<float3>)
+// _Dimensions (uint3)
+// _VoxelSpacing (float3)
+#include "PrincipalCurvatureHelpers.hlsl"
+// _PrincipalCurvatures (RWStructuredBuffer<float4>)
+// _Voxels (RWStructuredBuffer<float>)
+// _CurvatureScale (float)
+
+[numthreads(4, 4, 4)]
+void PrincipalCurvature (uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= _Dimensions)) return;
+
+    // Generate an orthonormal basis (uv) in the tangent plane given the normal
+    float3 normal = normalize(GradientValue(id));
+    float3 u1 = cross(normal, float3(1,0,0));
+    float3 u2 = cross(normal, float3(0,1,0));
+    float3 u = dot(u1, u1) > 0.1 ? u1 : u2;  // Safeguard in case normal is close to (1,0,0)
+    float3 v = normalize(cross(normal, u));
+
+    // Compute the 2x2 hessian along the tangent plane
+    const float e = _VoxelSpacing.x * _CurvatureScale;
+    float3 p = RemapIDToUVW(id);
+    float3 gu_p = GradientValueTrilinear(p+e*u);
+    float3 gu_n = GradientValueTrilinear(p-e*u);
+    float3 gv_p = GradientValueTrilinear(p+e*v);
+    float3 gv_n = GradientValueTrilinear(p-e*v);
+    
+    float3 hu = (gu_p - gu_n)/(e);
+    float3 hv = (gv_p - gv_n)/(e);
+    
+    float fxx = dot(hu, u);
+    float fyy = dot(hv, v);
+    float fxy = (dot(hu, v)+dot(hv, u))/2;
+    
+    // Derive eigenvectors and eigenvalues by diagonalizing
+    float D = sqrt((fxx - fyy)*(fxx - fyy)+4*fxy*fxy);
+    
+    float l1 = (fxx + fyy + D)/2;
+    float l2 = (fxx + fyy - D)/2;
+    
+    float3 ev1 = (2*fxy)*u + (fyy - fxx + D)*v;
+    float3 ev2 = (2*fxy)*u + (fyy - fxx - D)*v;
+
+    // Save first principal direction and curvature
+    float4 principalCurvature = float4(ev1, abs(l1));
+    _PrincipalCurvatures[VoxelIdx(id)] = principalCurvature;
+}
+       
+    
+    
+    

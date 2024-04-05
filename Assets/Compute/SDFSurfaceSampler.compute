@@ -1,0 +1,46 @@
+#pragma kernel SampleSurfacePoints
+
+#include "Packages/com.matthias.utilities/Runtime/Compute/VoxelHelpers.hlsl"
+// _Dimensions (uint3)
+// _VoxelStartPosition (float3)
+// _VoxelSpacing (float3)
+// _Voxels (RWStructuredBuffer<float>)
+#include "DispatchIndirectHelpers.hlsl"
+// _ThreadCount (uint)
+// _PointCounterBuffer (RWStructuredBuffer<int>)
+// _ThreadGroupCounterBuffer (RWStructuredBuffer<int>)
+
+RWStructuredBuffer<float3> _SurfacePoints;
+
+uint3 CubeVertex(uint index)
+{
+    bool x = index & 1;
+    bool y = index & 2;
+    bool z = index & 4;
+    return uint3(x ^ y, y, z);
+}
+
+[numthreads(4,4,4)]
+void SampleSurfacePoints (uint3 id : SV_DispatchThreadID)
+{
+    // Stop one point before the end because voxel includes neighbouring points
+    if (any(id >= _Dimensions-1)) return;
+
+    float3 vertex1 = id;
+    float s1 = VoxelValue(vertex1);
+
+    [unroll]
+    for (uint i = 1; i < 8; i++)
+    {
+        float3 vertex2 = id + CubeVertex(i);
+        float s2 = VoxelValue(vertex2);
+        if (s1 * s2 <= 0)
+        {
+            float param = (0 - s1) / (s2 - s1);
+            float3 surfacePoint = RemapIDToPosition(lerp(vertex1, vertex2, param));
+            uint count = _PointCounterBuffer.IncrementCounter();
+            _SurfacePoints[count] = surfacePoint;
+            if (count % _ThreadCount == 0) _ThreadGroupCounterBuffer.IncrementCounter();
+        }
+    }
+}

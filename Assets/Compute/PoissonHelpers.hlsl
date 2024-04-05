@@ -1,0 +1,10 @@
+﻿#ifndef POISSON_HELPERS_INCLUDED
+#define POISSON_HELPERS_INCLUDED
+
+////////////////////////////////////////////////////////////////////////////////
+///                                Uniforms                                  ///
+////////////////////////////////////////////////////////////////////////////////
+RWStructuredBuffer<float3> _PoissonPoints;
+StructuredBuffer<uint> _PoissonPointsCount;
+
+#endif
