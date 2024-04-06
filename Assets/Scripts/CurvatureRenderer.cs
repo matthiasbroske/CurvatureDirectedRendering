@@ -170,7 +170,7 @@ namespace Curvature
             // Run all stages of the render pipeline
             RunGradientCompute();
             RunSurfacePointSampler();
-            RunPoissonDiscSampler();
+            RunPoissonDiskSampler();
             RunCurvatureCompute();
             RunMinMaxCurvatureCompute();
             RunStreamlineBuilder();
@@ -211,13 +211,13 @@ namespace Curvature
         
 
         /// <summary>
-        /// Run the compute shader that performs poisson disc sampling.
+        /// Run the compute shader that performs poisson disk sampling.
         /// </summary>
-        private void RunPoissonDiscSampler()
+        private void RunPoissonDiskSampler()
         {
             if (!_initialized) return;
 
-            // Pass poisson disc radius radius and max points per cell to compute
+            // Pass poisson disk radius radius and max points per cell to compute
             _poissonCompute.SetInt("_MaxPointsPerCell", (int) (MAX_POISSON_POINTS_PER_VOXEL * Mathf.Pow(_poissonRadius / _sdf.VoxelSpacing.x, 2)));
             _poissonCompute.SetFloat("_RSqr", _poissonRadius * _poissonRadius);
             
@@ -231,7 +231,7 @@ namespace Curvature
             Vector3Int poissonRemoveThreadGroups = ComputeUtilities.GetThreadGroups(_poissonRemoveThreadGroupsX, _poissonRemoveThreadGroupsY, _poissonRemoveThreadGroupsZ, cellDimensions);
             Vector3Int poissonCollapseThreadGroups = ComputeUtilities.GetThreadGroups(_poissonCollapseThreadGroupsX, _poissonCollapseThreadGroupsY, _poissonCollapseThreadGroupsZ, cellDimensions);
       
-            // Dispatch poisson disc sampler compute
+            // Dispatch poisson disk sampler compute
             _pointCounterBuffer.SetCounterValue(0);
             _groupCounterBuffer.SetCounterValue(0);
             _poissonCompute.Dispatch(_poissonInitKernel, poissonInitThreadGroups.x, poissonInitThreadGroups.y, poissonInitThreadGroups.z);
@@ -350,7 +350,7 @@ namespace Curvature
         public void UpdatePoissonRadius(float radius)
         {
             _poissonRadius = Mathf.Max(_sdf.VoxelSpacing.x, radius);
-            RunPoissonDiscSampler();
+            RunPoissonDiskSampler();
             RunMinMaxCurvatureCompute();
             RunStreamlineBuilder();
         }
