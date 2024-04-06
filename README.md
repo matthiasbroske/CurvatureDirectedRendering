@@ -1,4 +1,7 @@
 # CurvatureDirectedRendering
+<p align="center">
+  <img alt="Demo Scene" src="https://github.com/matthiasbroske/CurvatureDirectedRendering/assets/82914350/57412d42-ad15-484c-9e9d-a70950025342">
+</p>
 
 ## About
 Curvature-directed lines for conveying the shape of 3D SDF surfaces in a perceptually optimal manner, modernized to run in real time on the GPU. 
