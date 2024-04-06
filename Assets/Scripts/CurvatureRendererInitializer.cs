@@ -21,7 +21,9 @@ namespace Curvature
         /// <param name="sdf">SDF to render</param>
         public void Initialize(SDF sdf)
         {
-            GetComponent<CurvatureRenderer>().Init(sdf, _curvatureSlider.value, _lengthSlider.value, _widthSlider.value, _spacingSlider.value);
+            CurvatureRenderer curvatureRenderer = GetComponent<CurvatureRenderer>();
+            curvatureRenderer.Init(sdf, _curvatureSlider.value, _lengthSlider.value, _widthSlider.value, _spacingSlider.value);
+            curvatureRenderer.Render();
         }
     }
 }

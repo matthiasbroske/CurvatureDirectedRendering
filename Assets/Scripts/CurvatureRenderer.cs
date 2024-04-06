@@ -1,11 +1,12 @@
-using System.IO;
 using UnityEngine;
 using Matthias.Utilities;
 using UnityEngine.Rendering;
-using Random = UnityEngine.Random;
 
 namespace Curvature
 {
+    /// <summary>
+    /// Renders curvature directed streamlines by dispatching compute shaders on the GPU.
+    /// </summary>
     public class CurvatureRenderer : MonoBehaviour
     {
         [Header("Render Settings")]
@@ -19,7 +20,7 @@ namespace Curvature
         [Header("Dependencies - Material")]
         [SerializeField] private Material _curvatureStreamlinesMaterial;
         
-        // Constant stride lengths
+        // Stride lengths
         private const int DRAW_INDIRECT_ARGS_STRIDE = sizeof(int) * 4;
         private const int DISPATCH_INDIRECT_ARGS_STRIDE = sizeof(int) * 3;
         private const int DRAW_TRIANGLE_STRIDE = sizeof(float) * 3 * (3 + 3);  // 3 * (position + normal)
@@ -48,6 +49,7 @@ namespace Curvature
         private ComputeBuffer _poissonCountBuffer;
         private ComputeBuffer _principalCurvatureBuffer;
         private ComputeBuffer _curvatureMinMaxBuffer;
+        // Buffer resets
         private readonly int[] _drawArgsBufferReset = { 0, 1, 0, 0 };
         private readonly int[] _dispatchArgsBufferReset = { 1, 1, 1 };
         private readonly int[] _minMaxBufferReset = { int.MaxValue, 0 };
@@ -106,23 +108,20 @@ namespace Curvature
             // Get thread groups
             _gradientThreadGroups = ComputeUtilities.GetThreadGroups(_gradientCompute, _gradientKernel, _sdf.Dimensions);
             _sampleSurfaceThreadGroups = ComputeUtilities.GetThreadGroups(_surfaceSamplerCompute, _sampleSurfaceKernel, _sdf.Dimensions);
-            
             _poissonCompute.GetKernelThreadGroupSizes(_poissonInitKernel, out _poissonInitThreadGroupsX, out _poissonInitThreadGroupsY, out _poissonInitThreadGroupsZ);
             _poissonCompute.GetKernelThreadGroupSizes(_poissonSelectKernel, out _poissonSelectThreadGroupsX, out _, out _);
             _poissonCompute.GetKernelThreadGroupSizes(_poissonRemoveKernel, out _poissonRemoveThreadGroupsX, out _poissonRemoveThreadGroupsY, out _poissonRemoveThreadGroupsZ);
             _poissonCompute.GetKernelThreadGroupSizes(_poissonCollapseKernel, out _poissonCollapseThreadGroupsX, out _poissonCollapseThreadGroupsY, out _poissonCollapseThreadGroupsZ);
-            
             _curvatureThreadGroups = ComputeUtilities.GetThreadGroups(_principalCurvatureCompute, _curvatureKernel, _sdf.Dimensions);
-            
             _streamlineBuilderCompute.GetKernelThreadGroupSizes(_streamlineKernel, out _streamlineThreadGroupsX, out _, out _);
             
             // Flag as initialized
             _initialized = true;
-            
-            // Rendera
-            Render();
         }
 
+        /// <summary>
+        /// Renders the curvature-directed streamlines, executing the entire rendering pipeline.
+        /// </summary>
         public void Render()
         {
             if (!_initialized) return;
@@ -168,17 +167,32 @@ namespace Curvature
             _streamlineBuilderCompute.SetBool("_ScaleWidthByCurvature", true);
             _streamlineBuilderCompute.SetBool("_Taper", true);
 
-            // Run all render steps
+            // Run all stages of the render pipeline
             RunGradientCompute();
             RunSurfacePointSampler();
-            RunPoissonSampler();
+            RunPoissonDiscSampler();
             RunCurvatureCompute();
             RunMinMaxCurvatureCompute();
             RunStreamlineBuilder();
         }
+        
+        /// <summary>
+        /// Render the streamlines every frame in LateUpdate.
+        /// </summary>
+        private void LateUpdate()
+        {
+            if (!_initialized) return;
+            
+            // Update the model matrix
+            _curvatureStreamlinesMaterial.SetMatrix("_ObjectToWorld", transform.localToWorldMatrix);
+            // Calculate the bounding box
+            Bounds bounds = GeometryUtility.CalculateBounds(new []{_sdf.Bounds.min, _sdf.Bounds.max}, transform.localToWorldMatrix);
+            // Draw the curvature streamlines indirectly
+            Graphics.DrawProceduralIndirect(_curvatureStreamlinesMaterial, bounds, MeshTopology.Triangles, _drawArgsBuffer, 0, null, null, _shadowCastingMode, true, gameObject.layer);
+        }
 
         /// <summary>
-        /// Run the compute shader that performs surface point sampling.
+        /// Run the compute shader that performs sampling on the surface of the SDF.
         /// </summary>
         private void RunSurfacePointSampler()
         {
@@ -197,15 +211,14 @@ namespace Curvature
         
 
         /// <summary>
-        /// Run the compute shader that performs poisson sampling.
+        /// Run the compute shader that performs poisson disc sampling.
         /// </summary>
-        private void RunPoissonSampler()
+        private void RunPoissonDiscSampler()
         {
             if (!_initialized) return;
 
-            // Pass new radius and max points per cell to compute 
-            float scale = _poissonRadius / _sdf.VoxelSpacing.x;
-            _poissonCompute.SetInt("_MaxPointsPerCell", (int) (MAX_POISSON_POINTS_PER_VOXEL * Mathf.Pow(scale, 2)));
+            // Pass poisson disc radius radius and max points per cell to compute
+            _poissonCompute.SetInt("_MaxPointsPerCell", (int) (MAX_POISSON_POINTS_PER_VOXEL * Mathf.Pow(_poissonRadius / _sdf.VoxelSpacing.x, 2)));
             _poissonCompute.SetFloat("_RSqr", _poissonRadius * _poissonRadius);
             
             // Update poisson cell dimensions given poisson radius
@@ -215,10 +228,10 @@ namespace Curvature
             
             // Get thread groups for current cell dimensions / poisson radius
             Vector3Int poissonInitThreadGroups = ComputeUtilities.GetThreadGroups(_poissonInitThreadGroupsX, _poissonInitThreadGroupsY, _poissonInitThreadGroupsZ, cellDimensions);
-            Vector3Int poissonRemoveThreadGroups = ComputeUtilities.GetThreadGroups(_poissonRemoveThreadGroupsX, _poissonRemoveThreadGroupsY, _poissonRemoveThreadGroupsZ, cellDimensions / 3);
+            Vector3Int poissonRemoveThreadGroups = ComputeUtilities.GetThreadGroups(_poissonRemoveThreadGroupsX, _poissonRemoveThreadGroupsY, _poissonRemoveThreadGroupsZ, cellDimensions);
             Vector3Int poissonCollapseThreadGroups = ComputeUtilities.GetThreadGroups(_poissonCollapseThreadGroupsX, _poissonCollapseThreadGroupsY, _poissonCollapseThreadGroupsZ, cellDimensions);
       
-            // Dispatch poisson sampler compute
+            // Dispatch poisson disc sampler compute
             _pointCounterBuffer.SetCounterValue(0);
             _groupCounterBuffer.SetCounterValue(0);
             _poissonCompute.Dispatch(_poissonInitKernel, poissonInitThreadGroups.x, poissonInitThreadGroups.y, poissonInitThreadGroups.z);
@@ -237,8 +250,7 @@ namespace Curvature
         }
         
         /// <summary>
-        /// Run the compute shader that calculates the gradient
-        /// at every voxel.
+        /// Run the compute shader that calculates the gradient at every voxel in the SDF.
         /// </summary>
         private void RunGradientCompute()
         {
@@ -248,8 +260,7 @@ namespace Curvature
         }
 
         /// <summary>
-        /// Run the compute shader that calculates the principal curvature
-        /// at every voxel.
+        /// Run the compute shader that calculates the principal curvature at every voxel in the SDF.
         /// </summary>
         private void RunCurvatureCompute()
         {
@@ -259,59 +270,17 @@ namespace Curvature
         }
 
         /// <summary>
-        /// Run the compute shader that calculates the min/max curvature
-        /// for the selected poisson points.
+        /// Run the compute shader that calculates the min/max curvature for the selected poisson points.
         /// </summary>
-        private float RunMinMaxCurvatureCompute()
+        private void RunMinMaxCurvatureCompute()
         {
-            if (!_initialized) return 0;
+            if (!_initialized) return;
             
             // Reset curvature min max
             _curvatureMinMaxBuffer.SetData(_minMaxBufferReset);
 
-            // int[] pCount = new[] { 0 };
-            // _poissonCountBuffer.GetData(pCount);
-            // int c = pCount[0];
-            // ComputeBuffer tempCurvatures = new ComputeBuffer(c, sizeof(float), ComputeBufferType.Default);
-            // _streamlineBuilderCompute.SetBuffer(_minMaxCurvatureKernel,"_PoissonCurvature", tempCurvatures);    
-            //
             // Dispatch
             _streamlineBuilderCompute.DispatchIndirect(_minMaxCurvatureKernel, _streamlineDispatchArgsBuffer);
-
-            // int[] delt = new [] { -1, -1 };
-            // _curvatureMinMaxBuffer.GetData(delt);
-            // Debug.Log(delt[0]);
-            // Debug.Log(delt[1]);
-            
-            // float[] curvatures = new float[c]; 
-            // tempCurvatures.GetData(curvatures);
-            // float mean = 0;
-            // float min = float.PositiveInfinity;
-            // float max = 0;
-            // for (int i = 0; i < c; i++)
-            // {
-            //     min = Mathf.Min(min, curvatures[i]); 
-            //     max = Mathf.Max(max, curvatures[i]);
-            //     mean += curvatures[i];
-            // }
-            // mean /= c;
-            // //Debug.Log("mean: " + mean);
-            //
-            // float sum = 0;
-            // for (int i = 0; i < c; i++)
-            // {
-            //     sum += Mathf.Pow(curvatures[i] - mean, 2);
-            // }
-            //
-            // float stddev = Mathf.Sqrt(sum / (c - 1));
-            
-            //Debug.Log("stddev: " + stddev);
-            //Debug.Log("Fake CV: " + stddev / max);
-            
-            // tempCurvatures.Release();
-            // tempCurvatures = null;
-
-            return 0;//stddev / max;
         }
         
         /// <summary>
@@ -326,52 +295,15 @@ namespace Curvature
             _drawArgsBuffer.SetData(_drawArgsBufferReset);
             
             // Dispatch
-            if (true)
-            {
-                _streamlineBuilderCompute.DispatchIndirect(_streamlineKernel, _streamlineDispatchArgsBuffer);
-            }
-            else
-            {
-                // int pointCount = 20000;
-                //
-                // // Resevoir sample
-                // int i; // index for elements in stream[] 
-                //
-                // Vector3[] reservoir = new Vector3[pointCount]; 
-                // for (i = 0; i < pointCount; i++) 
-                //     reservoir[i] = _samplePoints[i];
-                //
-                // // Iterate from the (k+1)th element to nth element 
-                // for (; i < _samplePoints.Length; i++) 
-                // { 
-                //     // Pick a random index from 0 to i. 
-                //     int j =  Random.Range(0, i + 1); 
-                //
-                //     // If the randomly picked index is smaller than k, 
-                //     // then replace the element present at the index 
-                //     // with new element from stream 
-                //     if (j < pointCount) 
-                //         reservoir[j] = _samplePoints[i]; 
-                // } 
-                //
-                // _poissonBuffer.SetData(reservoir);
-                // _pointCounterBuffer.SetCounterValue((uint)pointCount);
-                //
-                // _streamlineBuilderCompute.Dispatch(_streamlineKernel, Mathf.CeilToInt(pointCount / 64f), 1, 1);
-            }
-            // int[] test = _drawArgsBufferReset;
-            // _drawArgsBuffer.GetData(test);
-            // Debug.Log(test[0]);
-
-            // int[] otherTest = new int[3];
-            // _streamlineDispatchArgsBuffer.GetData(otherTest);
-            // Debug.Log(otherTest[0]);
-            
-            // int[] countTest = new int[1];
-            // _poissonCountBuffer.GetData(countTest);
-            // Debug.Log(countTest[0]);
+            _streamlineBuilderCompute.DispatchIndirect(_streamlineKernel, _streamlineDispatchArgsBuffer);
         }
 
+        // Taper
+        public void TaperStreamlines(bool taper)
+        {
+            _streamlineBuilderCompute.SetBool("_Taper", taper);
+            RunStreamlineBuilder();
+        }
         // Width
         public void ScaleStreamlineWidthByCurvature(bool scaleByCurvature)
         {
@@ -391,12 +323,6 @@ namespace Curvature
         public void UpdateStreamlineMaxWidth(float maxWidth)
         {
             _streamlineBuilderCompute.SetFloat("_MaxWidth", maxWidth);
-            RunStreamlineBuilder();
-        }
-        // Taper
-        public void TaperStreamlines(bool taper)
-        {
-            _streamlineBuilderCompute.SetBool("_Taper", taper);
             RunStreamlineBuilder();
         }
         // Length
@@ -424,7 +350,7 @@ namespace Curvature
         public void UpdatePoissonRadius(float radius)
         {
             _poissonRadius = Mathf.Max(_sdf.VoxelSpacing.x, radius);
-            RunPoissonSampler();
+            RunPoissonDiscSampler();
             RunMinMaxCurvatureCompute();
             RunStreamlineBuilder();
         }
@@ -436,7 +362,7 @@ namespace Curvature
             RunMinMaxCurvatureCompute();
             RunStreamlineBuilder();
         }
-        // Scale
+        // Scale by curvature
         public void ScaleByCurvature(bool scaleByCurvature)
         {
             _streamlineBuilderCompute.SetBool("_ScaleLengthByCurvature", scaleByCurvature);
@@ -444,19 +370,10 @@ namespace Curvature
             RunStreamlineBuilder();
         }
 
-        private void LateUpdate()
-        {
-            if (_initialized)
-            {
-                _curvatureStreamlinesMaterial.SetMatrix("_ObjectToWorld", transform.localToWorldMatrix);
-                
-                Bounds bounds = GeometryUtility.CalculateBounds(new []{_sdf.Bounds.min, _sdf.Bounds.max}, transform.localToWorldMatrix);
-                // Draw the curvature streamlines
-                Graphics.DrawProceduralIndirect(_curvatureStreamlinesMaterial, bounds, MeshTopology.Triangles, _drawArgsBuffer, 0, null, null, _shadowCastingMode, true, gameObject.layer);
-            }
-        }
-
-        void CreateBuffers()
+        /// <summary>
+        /// Initializes all compute buffers needed to generate and render streamlines.
+        /// </summary>
+        private void CreateBuffers()
         {
             ReleaseBuffers();
 
@@ -523,7 +440,7 @@ namespace Curvature
         }
         
         /// <summary>
-        /// Attaches buffers to their respective compute shaders.
+        /// Attaches buffers to their respective compute shaders/materials.
         /// </summary>
         private void SetBuffers()
         {
@@ -579,17 +496,23 @@ namespace Curvature
             _streamlineBuilderCompute.SetBuffer(_streamlineKernel, "_CurvatureMinMax", _curvatureMinMaxBuffer);
         }
         
+        /// <summary>
+        /// Re-attach buffers on application focus since buffer connections
+        /// are lost when the application loses focus.
+        /// </summary>
+        /// <param name="hasFocus"></param>
         private void OnApplicationFocus(bool hasFocus)
         {
-            // Set buffers on application focus
-            // (buffer connections are often lost when the application loses focus...)
             if (hasFocus && _initialized)
             {
                 SetBuffers();
             }
         }
 
-        void OnDestroy()
+        /// <summary>
+        /// Release all buffers when destroyed.
+        /// </summary>
+        private void OnDestroy()
         {
             ReleaseBuffers();
         }
