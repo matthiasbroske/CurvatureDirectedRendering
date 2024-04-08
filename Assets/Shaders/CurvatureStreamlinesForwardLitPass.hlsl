@@ -25,6 +25,7 @@ float4 _BackColor;
 float _Smoothness;
 float _Metalness;
 float4x4 _ObjectToWorld;
+float4x4 _WorldToObject;
 
 // ===== Vert =====
 Interpolators Vertex(Attributes input)
@@ -35,7 +36,7 @@ Interpolators Vertex(Attributes input)
     DrawVertex vert = tri.vertices[input.vertexID % 3];
 
     output.positionWS = mul(_ObjectToWorld, float4(vert.positionOS, 1.0)).xyz;
-    output.normalWS = mul(vert.normalOS, (float3x3)_ObjectToWorld);
+    output.normalWS = mul(vert.normalOS, (float3x3)_WorldToObject);
     output.positionCS = TransformWorldToHClip(output.positionWS);
 
     return output;

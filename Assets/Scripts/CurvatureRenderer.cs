@@ -185,6 +185,7 @@ namespace Curvature
             
             // Update the model matrix
             _curvatureStreamlinesMaterial.SetMatrix("_ObjectToWorld", transform.localToWorldMatrix);
+            _curvatureStreamlinesMaterial.SetMatrix("_WorldToObject", transform.worldToLocalMatrix);
             // Calculate the bounding box
             Bounds bounds = GeometryUtility.CalculateBounds(new []{_sdf.Bounds.min, _sdf.Bounds.max}, transform.localToWorldMatrix);
             // Draw the curvature streamlines indirectly

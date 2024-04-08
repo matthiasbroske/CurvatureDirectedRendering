@@ -20,6 +20,7 @@ struct Interpolators
 StructuredBuffer<DrawTriangle> _DrawTriangles;
 float3 _LightDirection;
 float4x4 _ObjectToWorld;
+float4x4 _WorldToObject;
 
 // ===== Helpers =====
 float3 FlipNormalBasedOnViewDir(float3 normalWS, float3 positionWS)
@@ -51,7 +52,7 @@ Interpolators Vertex(Attributes input)
     DrawVertex vert = tri.vertices[input.vertexID % 3];
 
     float3 positionWS = mul(_ObjectToWorld, float4(vert.positionOS, 1.0)).xyz;
-    float3 normalWS = mul(vert.normalOS, (float3x3)_ObjectToWorld);
+    float3 normalWS = mul(vert.normalOS, (float3x3)_WorldToObject);
 
     output.positionCS = GetShadowCasterPositionCS(positionWS, normalWS);
 
