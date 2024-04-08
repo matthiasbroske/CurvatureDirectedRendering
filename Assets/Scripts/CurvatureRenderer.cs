@@ -63,6 +63,8 @@ namespace Curvature
         private int _curvatureKernel;
         private int _minMaxCurvatureKernel;
         private int _streamlineKernel;
+        // Demonstration purposes only
+        private bool _usePoisson = true;
         // Thread groups
         private Vector3Int _gradientThreadGroups;
         private Vector3Int _sampleSurfaceThreadGroups;
@@ -89,9 +91,9 @@ namespace Curvature
             // Set default parameters
             _principalCurvatureCompute.SetFloat("_CurvatureScale", curvatureScale);
             _streamlineBuilderCompute.SetFloat("_MaxLength", length);
-            _streamlineBuilderCompute.SetFloat("_Length", length);
+            _streamlineBuilderCompute.SetFloat("_Length", length / 5);
             _streamlineBuilderCompute.SetFloat("_MaxWidth", width);
-            _streamlineBuilderCompute.SetFloat("_Width", width);
+            _streamlineBuilderCompute.SetFloat("_Width", width / 5);
             _poissonRadius = Mathf.Max(_sdf.VoxelSpacing.x, spacing);
             
             // Get kernels
@@ -162,7 +164,6 @@ namespace Curvature
             _streamlineBuilderCompute.SetInts("_Dimensions", new int[3] { _sdf.Dimensions.x, _sdf.Dimensions.y, _sdf.Dimensions.z });
             _streamlineBuilderCompute.SetVector("_VoxelStartPosition", _sdf.StartPosition);
             _streamlineBuilderCompute.SetVector("_VoxelSpacing", _sdf.VoxelSpacing);
-            _streamlineBuilderCompute.SetFloat("_Width", _sdf.VoxelSpacing.x);
             _streamlineBuilderCompute.SetBool("_ScaleLengthByCurvature", true);
             _streamlineBuilderCompute.SetBool("_ScaleWidthByCurvature", true);
             _streamlineBuilderCompute.SetBool("_Taper", true);
@@ -295,8 +296,43 @@ namespace Curvature
             _streamlineTriangleBuffer.SetCounterValue(0);
             _drawArgsBuffer.SetData(_drawArgsBufferReset);
             
-            // Dispatch
-            _streamlineBuilderCompute.DispatchIndirect(_streamlineKernel, _streamlineDispatchArgsBuffer);
+            if (_usePoisson)
+            {
+                _streamlineBuilderCompute.DispatchIndirect(_streamlineKernel, _streamlineDispatchArgsBuffer);
+            }
+            // For demonstration purposes only, hack to inject non-poisson points as seeds
+            // for streamline building
+            else
+            {
+                // Get original surface point sample set
+                int[] surfacePointCountBuffer = new int[1];
+                _surfacePointsCountBuffer.GetData(surfacePointCountBuffer);
+                int surfacePointCount = surfacePointCountBuffer[0];
+                Vector3[] surfacePoints = new Vector3[surfacePointCount];
+                _surfacePointsBuffer.GetData(surfacePoints);
+                
+                // Use reservoir sampling to randomly sample from original point set
+                int pointCount = 20000;
+
+                int i;
+                Vector3[] reservoir = new Vector3[pointCount];
+                for (i = 0; i < pointCount; i++)
+                    reservoir[i] = surfacePoints[i];
+
+                for (; i < surfacePoints.Length; i++)
+                {
+                    int j = Random.Range(0, i + 1);
+                    if (j < pointCount)
+                        reservoir[j] = surfacePoints[i];
+                }
+                
+                // Pass newly sampled random points to streamline builder
+                _poissonBuffer.SetData(reservoir);
+                _pointCounterBuffer.SetCounterValue((uint)pointCount);
+                
+                // Dispatch
+                _streamlineBuilderCompute.Dispatch(_streamlineKernel, Mathf.CeilToInt((float)pointCount / _streamlineThreadGroupsX), 1, 1);
+            }
         }
 
         // Taper
@@ -313,7 +349,7 @@ namespace Curvature
         }
         public void UpdateStreamlineWidth(float width)
         {
-            _streamlineBuilderCompute.SetFloat("_Width", width);
+            _streamlineBuilderCompute.SetFloat("_Width", width/5); // For demo purposes only
             RunStreamlineBuilder();
         }
         public void UpdateStreamlineMinWidth(float minWidth)
@@ -334,7 +370,7 @@ namespace Curvature
         }
         public void UpdateStreamlineLength(float length)
         {
-            _streamlineBuilderCompute.SetFloat("_Length", length);
+            _streamlineBuilderCompute.SetFloat("_Length", length/5); // For demo purposes only
             RunStreamlineBuilder();
         }
         public void UpdateStreamlineMinLength(float minlength)
@@ -369,6 +405,21 @@ namespace Curvature
             _streamlineBuilderCompute.SetBool("_ScaleLengthByCurvature", scaleByCurvature);
             _streamlineBuilderCompute.SetBool("_ScaleWidthByCurvature", scaleByCurvature);
             RunStreamlineBuilder();
+        }
+        // Use poisson
+        public void UsePoisson(bool usePoisson)
+        {
+            _usePoisson = usePoisson;
+            if (_usePoisson)
+            {
+                RunPoissonDiskSampler();
+                RunMinMaxCurvatureCompute();
+                RunStreamlineBuilder();
+            }
+            else
+            {
+                RunStreamlineBuilder();
+            }
         }
 
         /// <summary>
