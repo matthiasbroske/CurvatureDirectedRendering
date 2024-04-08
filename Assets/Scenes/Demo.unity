@@ -632,14 +632,14 @@ Transform:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 330585543}
-  m_LocalRotation: {x: -0.12204217, y: 0.63899416, z: -0.10365003, w: -0.7523622}
-  m_LocalPosition: {x: 3.1869853, y: 1.5660026, z: 0.34715477}
+  m_LocalRotation: {x: 0.06974928, y: -0.7071934, z: 0.07046263, w: 0.7000339}
+  m_LocalPosition: {x: 2.3375895, y: 1.35, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
   m_RootOrder: 0
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+  m_LocalEulerAnglesHint: {x: 11.38, y: -90.583, z: 0}
 --- !u!114 &330585547
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2931,7 +2931,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   _shadowCastingMode: 2
-  _sdfBuilderCompute: {fileID: 7200000, guid: 08760d4b38770424a9798503b38ce4a6, type: 3}
   _gradientCompute: {fileID: 7200000, guid: b7bb582e27b3c5241ab37cc32b16950b, type: 3}
   _surfaceSamplerCompute: {fileID: 7200000, guid: fe83c48677162bf4db944158de617b37,
     type: 3}

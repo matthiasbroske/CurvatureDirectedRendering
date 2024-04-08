@@ -24,7 +24,7 @@ namespace Curvature
             // Calculate the voxel spacing
             Vector3 voxelSpacing = new Vector3(_size.x / _dimensions.x, _size.y / _dimensions.y, _size.z / _dimensions.z);
             // Create the sdf
-            SDF sdf = new SDF(Vector3.zero, voxelSpacing, Vector3Int.one * _dimensions, new float[_dimensions.x*_dimensions.y*_dimensions.z]);
+            SDF sdf = new SDF(new Vector3(-_size.x/2, 0, -_size.z/2), voxelSpacing, Vector3Int.one * _dimensions, new float[_dimensions.x*_dimensions.y*_dimensions.z]);
             // Load the binary voxel data
             byte[] byteData = File.ReadAllBytes(Path.Combine(_filePath, _fileName + ".sdf"));
             System.Buffer.BlockCopy(byteData, 0, sdf.Voxels, 0, byteData.Length);
