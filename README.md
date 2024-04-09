@@ -18,8 +18,25 @@ To experiment with the demo, press play in the `Demo` scene and adjust the vario
 
 There are three additional toggles in the top right corner that are meant to be left on, but can be toggled off to demonstrate how their associated features are necessary in maximizing the perceptual effectiveness of the technique. They are as follows:
 - **Taper:** Whether or not to taper the lines. Creates softer, more visually appealing lines.
+<p align="left">
+  <img alt="Taper" src="https://github.com/matthiasbroske/CurvatureDirectedRendering/assets/82914350/84556c98-fabb-4108-be39-f160218d862c" width="40%">
+&nbsp; &nbsp;
+  <img alt="No Taper" src="https://github.com/matthiasbroske/CurvatureDirectedRendering/assets/82914350/f5840afa-ddd0-478a-86b6-7dd1a356f523" width="40%">
+</p>
+
 - **Scale by Curvature:** Whether or not to scale the length and width of lines by the value of first principal curvature. Essential for conveying the shape of the object.
+<p align="left">
+  <img alt="Scale by Curvature" src="https://github.com/matthiasbroske/CurvatureDirectedRendering/assets/82914350/9e951a6b-35b7-490e-a06a-02dc47d9859b" width="40%">
+&nbsp; &nbsp;
+  <img alt="Constant Scale" src="https://github.com/matthiasbroske/CurvatureDirectedRendering/assets/82914350/ed44b1af-034a-4c4d-84bf-476bb3eaba3b" width="40%">
+</p>
+
 - **Poisson Disk Sampling:** Whether or not to use poisson disk sampling to generate the initial starting points for the lines. Necessary to avoid overlapping lines and inconsistent empty space.
+<p align="left">
+  <img alt="Poisson Disk Sampling" src="https://github.com/matthiasbroske/CurvatureDirectedRendering/assets/82914350/adbd709e-3bdb-4eb7-8daf-9b08dedc03c3" width="40%">
+&nbsp; &nbsp;
+  <img alt="Random Sampling" src="https://github.com/matthiasbroske/CurvatureDirectedRendering/assets/82914350/f673ae17-e913-44aa-a6b8-d4068549ebd9" width="40%">
+</p>
 
 ## Usage
 This is a general technique that can be applied to the rendering of any 3D SDF surface. To apply this technique to an SDF of your own, simply use the [`CurvatureRenderer.cs`](Assets/Scripts/CurvatureRenderer.cs) class as demonstrated in the `Demo` scene.
