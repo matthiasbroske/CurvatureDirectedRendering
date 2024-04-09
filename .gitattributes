@@ -1,0 +1,3 @@
+*.hlsl linguist-detectable=true
+*.shaderlab linguist-detectable=false
+*.cs linguist-detectable=false
