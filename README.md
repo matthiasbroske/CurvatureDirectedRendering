@@ -1,6 +1,6 @@
 # CurvatureDirectedRendering
 <p align="center">
-  <img alt="Demo Scene" src="https://github.com/matthiasbroske/CurvatureDirectedRendering/assets/82914350/57412d42-ad15-484c-9e9d-a70950025342">
+  <img alt="Demo Scene" src="https://github.com/matthiasbroske/CurvatureDirectedRendering/assets/82914350/b0218719-855b-455d-9412-36dd23e7bb35">
 </p>
 
 ## About
