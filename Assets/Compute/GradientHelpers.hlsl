@@ -22,5 +22,9 @@ float3 GradientValue(uint3 voxelId)
 float3 GradientValueTrilinear(float3 uvw) {
     return Float3ValueTrilinear(uvw, _Gradients);
 }
+float4 VoxelGradientWithValue(uint3 i)
+{
+    return float4(GradientValue(i), VoxelValue(i));
+}
 
 #endif

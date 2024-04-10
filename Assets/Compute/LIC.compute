@@ -1,0 +1,194 @@
+#pragma kernel InitNoise
+#pragma kernel InitParticles
+#pragma kernel LIC
+
+#include "Packages/com.matthias.utilities/Runtime/Compute/VolumeHelpers.hlsl"
+#include "NoiseHelpers.hlsl"
+#include "PrincipalCurvatureHelpers.hlsl"
+
+RWStructuredBuffer<float> _LIC;
+RWStructuredBuffer<float3> _Gradients;
+StructuredBuffer<float3> _Poisson;
+uint _PoissonCount;
+
+float3 GradientValueTrilinear(float3 uvw) {
+    return Float3ValueTrilinear(uvw, _Gradients);
+}
+
+float3 VoxelBoundsMinUVW(uint3 i, float3 voxelSpacingUVW)
+{
+    float3 voxelCenterUVW = RemapIDToUVW(i);
+    return voxelCenterUVW - voxelSpacingUVW / 2;
+}
+
+float Invert(float value)
+{
+    if (value == 0)
+    {
+        return 999999;
+    }
+    else
+    {
+        return 1. / value;
+    }
+}
+
+float3 Invert(float3 value)
+{
+    return float3(Invert(value.x), Invert(value.y), Invert(value.z));
+}
+
+float PerformLIC(uint3 i, float3 uvw, float3 previousDirection, float3 voxelSizeUVW)
+{
+    float lic = 0;
+    int iters = 5;
+    for (int j = 0; j < iters; j++)
+    {
+        //_Debug[j] = RemapUVWToPosition(uvw);
+
+        // Sample the noise at this uvw
+        lic += WhiteNoiseValueTrilinear(uvw);
+
+        // Sample the direction at this uvw
+        float4 curvature = normalize(PrincipalCurvatureValueTrilinear(uvw));  // Ray direction (sampled from principal curvature vector field)
+        float3 direction = normalize(curvature.xyz);
+        direction *= (dot(direction, previousDirection) >= 0 ? 1 : -1);
+        previousDirection = direction;
+        float3 boundsMinUVW = VoxelBoundsMinUVW(i, voxelSizeUVW);  // Min bounds of voxel we are currently in
+        float3 offsetUVW = uvw - boundsMinUVW;  // Offset of current ray origin into it's current voxel in uvw space
+
+        // Compute time to voxel intersection in x, y and z for this direction
+        float tx = ((direction.x >= 0 ? voxelSizeUVW.x : 0) - offsetUVW.x) * Invert(direction.x);
+        float ty = ((direction.y >= 0 ? voxelSizeUVW.y : 0) - offsetUVW.y) * Invert(direction.y);
+        float tz = ((direction.z >= 0 ? voxelSizeUVW.z : 0) - offsetUVW.z) * Invert(direction.z);
+        
+        float t;
+        if (tx < ty && tx < tz)
+        {
+            t = tx;
+            i.x += direction.x > 0 ? 1 : -1;
+        }
+        else if (ty < tz)
+        {
+            t = ty;
+            i.y += direction.y > 0 ? 1 : -1;
+        }
+        else
+        {
+            t = tz;
+            i.z += direction.z > 0 ? 1 : -1;
+        }
+        
+        uvw = uvw + direction * t;
+
+        if (any(uvw < 0) || any(uvw > 1)) return lic / (j+1);
+    }
+
+    return lic;
+}
+
+float3 RK4CurvatureDirection(float3 uvw, float h, float3 guideDirection)
+{
+    float3 k1 = normalize(PrincipalCurvatureDirectionTrilinear(uvw));
+    k1 *= (dot(guideDirection, k1) > 0) ? 1 : -1;
+    float3 k2 = normalize(PrincipalCurvatureDirectionTrilinear(uvw+h/2*k1));
+    k2 *= (dot(guideDirection, k2) > 0) ? 1 : -1;
+    float3 k3 = normalize(PrincipalCurvatureDirectionTrilinear(uvw+h/2*k2));
+    k3 *= (dot(guideDirection, k3) > 0) ? 1 : -1;
+    float3 k4 = normalize(PrincipalCurvatureDirectionTrilinear(uvw+h*k3));
+    k4 *= (dot(guideDirection, k4) > 0) ? 1 : -1;
+
+    return h/6*(k1 + 2*k2 + 2*k3 + 1*k4);
+}
+
+float PerformFrontBackLIC(uint3 i)
+{
+    float4 curvature = PrincipalCurvatureValue(i);
+    
+    float3 uvwFront = RemapIDToUVW(i);
+    float3 uvwBack = uvwFront;
+    float3 prevDirectionFront = normalize(curvature.xyz);
+    float3 prevDirectionBack = -prevDirectionFront;
+    
+    float h = _VoxelSpacing.x/2;
+    int iters = clamp(abs(curvature.w)*10, 1, 25);
+    float x = 0;
+    float c = iters * h / 2.5;
+    float a = 1 / (c * sqrt(2 * 3.14159));
+    float lic = WhiteNoiseValue(i) * h;
+    for (int j = 0; j < iters; j++)
+    {
+        //_Debug[j] = RemapUVWToPosition(uvw);
+        
+        // Sample curvature direction along streamline front/back
+        float3 curvatureFront = RK4CurvatureDirection(uvwFront, h, prevDirectionFront);
+        float3 curvatureBack = RK4CurvatureDirection(uvwBack, h, prevDirectionBack);
+        // Maintain flow direction
+        float3 directionFront = dot(curvatureFront, prevDirectionFront) >= 0 ? curvatureFront : -curvatureFront;
+        float3 directionBack = dot(curvatureBack, prevDirectionBack) >= 0 ? curvatureBack : -curvatureBack;
+        prevDirectionFront = directionFront;
+        prevDirectionBack = directionBack;
+        // Move along stream line in front/back direction
+        uvwFront += directionFront;
+        uvwFront += -normalize(GradientValueTrilinear(uvwFront))*VoxelValueTrilinear(uvwFront);
+        uvwBack += directionBack;
+        uvwBack += -normalize(GradientValueTrilinear(uvwBack))*VoxelValueTrilinear(uvwBack);
+        x += h;
+
+        // Sample the noise at front/back uvw
+        // TODO: Undefined  behaviour when out of bounds
+        float k = 50;//a * exp(-(x*x)/(2*c*c));
+        lic += WhiteNoiseValueTrilinear(uvwFront) * k * h;
+        lic += WhiteNoiseValueTrilinear(uvwBack) * k * h;
+    }
+
+    return lic;
+}
+
+[numthreads(4,4,4)]
+void InitNoise (uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= _Dimensions-1)) return;
+    int spacing = 4;
+
+    _WhiteNoise[VoxelIdx(id)] = 0;
+    return;
+
+    //bool on = !(id.x % spacing != 0 || id.y % spacing != 0 || id.z % spacing != 0);//(abs(VoxelValue(id)) < _VoxelSpacing.x*2 && Hash13(id) > 0.9);
+    bool on = Hash13(id) > 0.9;// (abs(VoxelValue(id)) < _VoxelSpacing.x*2 && Hash13(id) > 0.9);
+
+    uint2 e = uint2(1,0);
+    //_WhiteNoise[VoxelIdx(id)] = (abs(VoxelValue(id)) < _VoxelSpacing.x*2 && Hash13(id) > 0.9) ? 1 : 0;// (id.x % spacing != 0 || id.y % spacing != 0 || id.z % spacing != 0) ? 0 : 1;
+    _WhiteNoise[VoxelIdx(id)] = on ? 1 : 0;
+    if (on)
+    {
+        _WhiteNoise[VoxelIdx(id+e.xyy)] = 1;
+        _WhiteNoise[VoxelIdx(id+e.yxy)] = 1;
+        _WhiteNoise[VoxelIdx(id+e.yyx)] = 1;
+    }
+}
+
+[numthreads(64,1,1)]
+void InitParticles (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _PoissonCount) return;
+    
+    uint i = id.x;
+
+    float3 pos = _Poisson[i];//_DrawTriangles[i / 3].vertices[i % 3].positionOS;
+    uint3 idx = RemapUVWToID(RemapPositionToUVW(pos));
+    
+    _WhiteNoise[VoxelIdx(idx)] = 1;
+}
+
+[numthreads(4,4,4)]
+void LIC (uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= _Dimensions)) return;
+
+    uint3 i = id;  // Current voxel index
+
+    float lic = PerformFrontBackLIC(i);
+
+    _LIC[VoxelIdx(id)] = lic;// normalize(PrincipalCurvatureDirection(i)).x;// abs(PrincipalCurvatureValue(i).w/3000);//lic/2;//WhiteNoiseValue(id);// 
+}

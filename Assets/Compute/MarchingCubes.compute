@@ -1,0 +1,68 @@
+#pragma kernel March
+
+#include "MarchingCubesHelpers.hlsl"
+#include "GradientHelpers.hlsl"
+#include "DrawIndirectHelpers.hlsl"
+
+AppendStructuredBuffer<DrawTriangle> _DrawTriangles;
+
+[numthreads(4, 4, 4)]
+void March(uint3 id : SV_DispatchThreadID)
+{
+    // Stop one point before the end because voxel includes neighbouring points
+    if (any(id >= _Dimensions-1)) return;
+
+    float4 samples[8];
+    for (uint i = 0; i < 8; i++)
+        samples[i] = VoxelGradientWithValue(id + CubeVertex(i));
+
+    uint selector = 0;
+    for (i = 0; i < 8; i++)
+        selector |= (samples[i].w < _IsoValue) << i;
+
+    // Exit early if nothing can be constructed for this voxel
+    if (selector == 0 || selector == 0xff) return;
+	
+    float3 vertices[12];
+    float3 normals[12];
+    for (i = 0; i < 12; i++)
+    {
+        uint2 pair = EdgeVertexPair(i);
+        float4 sample1 = samples[pair.x];
+        float4 sample2 = samples[pair.y];
+        float3 vertex1 = id + CubeVertex(pair.x);
+        float3 vertex2 = id + CubeVertex(pair.y);
+        float param = (_IsoValue - sample1.w) / (sample2.w - sample1.w);
+        vertices[i] = RemapIDToPosition(lerp(vertex1, vertex2, param));
+        normals[i] = normalize(lerp(sample1.xyz, sample2.xyz, param));
+    }
+
+    uint numTris = 0;
+    uint2 tri_data = _TriangleTable[selector];
+    for (i = 0; i < 15; i += 3)
+    {
+        uint e1 = EdgeIndexFromTriangleTable(tri_data, i + 1);
+        uint e2 = EdgeIndexFromTriangleTable(tri_data, i + 0);
+        uint e3 = EdgeIndexFromTriangleTable(tri_data, i + 2);
+        if (e1 == 15) break;
+
+        DrawTriangle tri = (DrawTriangle)0;
+        DrawVertex v1;
+        v1.positionOS = vertices[e1];
+        v1.normalOS = normals[e1];
+        tri.vertices[0] = v1;
+        DrawVertex v2;
+        v2.positionOS = vertices[e2];
+        v2.normalOS = normals[e2];
+        tri.vertices[1] = v2;
+        DrawVertex v3;
+        v3.positionOS = vertices[e3];
+        v3.normalOS = normals[e3];
+        tri.vertices[2] = v3;
+        _DrawTriangles.Append(tri);
+        numTris++;
+    }
+
+    // Add args to buffer, avoiding race conditions
+    InterlockedAdd(_IndirectArgs[0].numVerticesPerInstance, numTris * 3);
+}
