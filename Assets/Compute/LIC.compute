@@ -5,11 +5,12 @@
 #include "Packages/com.matthias.utilities/Runtime/Compute/VolumeHelpers.hlsl"
 #include "NoiseHelpers.hlsl"
 #include "PrincipalCurvatureHelpers.hlsl"
+#include "PoissonHelpers.hlsl"
+/// _PoissonPoints (RWStructuredBuffer<float3>)
+/// _PoissonPointsCount (StructuredBuffer<uint>)
 
 RWStructuredBuffer<float> _LIC;
 RWStructuredBuffer<float3> _Gradients;
-StructuredBuffer<float3> _Poisson;
-uint _PoissonCount;
 
 float3 GradientValueTrilinear(float3 uvw) {
     return Float3ValueTrilinear(uvw, _Gradients);
@@ -111,7 +112,7 @@ float PerformFrontBackLIC(uint3 i)
     float3 prevDirectionBack = -prevDirectionFront;
     
     float h = _VoxelSpacing.x/2;
-    int iters = clamp(abs(curvature.w)*10, 1, 25);
+    int iters = 10;//clamp(abs(curvature.w)*10, 1, 25);
     float x = 0;
     float c = iters * h / 2.5;
     float a = 1 / (c * sqrt(2 * 3.14159));
@@ -171,11 +172,11 @@ void InitNoise (uint3 id : SV_DispatchThreadID)
 [numthreads(64,1,1)]
 void InitParticles (uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= _PoissonCount) return;
+    if (id.x >= _PoissonPointsCount[0]) return;
     
     uint i = id.x;
 
-    float3 pos = _Poisson[i];//_DrawTriangles[i / 3].vertices[i % 3].positionOS;
+    float3 pos = _PoissonPoints[i];//_DrawTriangles[i / 3].vertices[i % 3].positionOS;
     uint3 idx = RemapUVWToID(RemapPositionToUVW(pos));
     
     _WhiteNoise[VoxelIdx(idx)] = 1;
@@ -190,5 +191,5 @@ void LIC (uint3 id : SV_DispatchThreadID)
 
     float lic = PerformFrontBackLIC(i);
 
-    _LIC[VoxelIdx(id)] = lic;// normalize(PrincipalCurvatureDirection(i)).x;// abs(PrincipalCurvatureValue(i).w/3000);//lic/2;//WhiteNoiseValue(id);// 
+    _LIC[VoxelIdx(id)] = lic;//_WhiteNoise[VoxelIdx(id)];// lic;// normalize(PrincipalCurvatureDirection(i)).x;// abs(PrincipalCurvatureValue(i).w/3000);//lic/2;//WhiteNoiseValue(id);// 
 }

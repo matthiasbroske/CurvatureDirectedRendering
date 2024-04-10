@@ -203,8 +203,10 @@ namespace Curvature
             RunSurfacePointSampler();
             RunPoissonDiskSampler();
             RunCurvatureCompute();
-            RunMinMaxCurvatureCompute();
-            RunStreamlineBuilder();
+            // RunMinMaxCurvatureCompute();
+            // RunStreamlineBuilder();
+            RunLIC();
+            RunMarchingCubes();
         }
         
         /// <summary>
@@ -370,23 +372,13 @@ namespace Curvature
         /// </summary>
         private void RunLIC()
         {
-            // Get back all the points
-            // int[] tempArgsBuffer = new int[] { 0, 1, 0, 0 };
-            // _argsBuffer.GetData(tempArgsBuffer);
-            // Vector3[] surfacePoints = new Vector3[tempArgsBuffer[0]*2];
-            // _triangleBuffer.GetData(surfacePoints);
-            //
-            // _poissonSamples = Poisson(surfacePoints, Mathf.Pow(_structureSDF.VoxelSpacing.x * 4, 2));
-            // _poissonBuffer?.Release();
-            // _poissonBuffer = new ComputeBuffer(_poissonSamples.Count, sizeof(float) * 3, ComputeBufferType.Default);
-            // _poissonBuffer.SetData(_poissonSamples);
-            // _licCompute.SetBuffer(_particlesKernel, "_Poisson", _poissonBuffer);
-            // _licCompute.SetInt("_PoissonCount", _poissonSamples.Count);
-            //
-            // _licCompute.Dispatch(_noiseKernel, _noiseThreadGroups.x, _noiseThreadGroups.y, _noiseThreadGroups.z);
-            // _licCompute.Dispatch(_particlesKernel,  Mathf.CeilToInt(_poissonSamples.Count/64f), 1, 1);
-            //
-            // _licCompute.Dispatch(_licKernel, _licThreadGroups.x, _licThreadGroups.y, _licThreadGroups.z);
+            if (!_initialized) return;
+            
+            _licCompute.Dispatch(_noiseKernel, _noiseThreadGroups.x, _noiseThreadGroups.y, _noiseThreadGroups.z);
+            
+            _licCompute.DispatchIndirect(_particlesKernel, _streamlineDispatchArgsBuffer);
+            
+            _licCompute.Dispatch(_licKernel, _licThreadGroups.x, _licThreadGroups.y, _licThreadGroups.z);
         }
 
         /// <summary>
@@ -394,6 +386,11 @@ namespace Curvature
         /// </summary>
         private void RunMarchingCubes()
         {
+            if (!_initialized) return;
+            
+            _streamlineTriangleBuffer.SetCounterValue(0);
+            _drawArgsBuffer.SetData(_drawArgsBufferReset);
+            
             _marchingCubesCompute.Dispatch(_marchKernel, _mcThreadGroups.x, _mcThreadGroups.y, _mcThreadGroups.z);
         }
 
@@ -450,16 +447,18 @@ namespace Curvature
         {
             _poissonRadius = Mathf.Max(_sdf.VoxelSpacing.x, radius);
             RunPoissonDiskSampler();
-            RunMinMaxCurvatureCompute();
-            RunStreamlineBuilder();
+            // RunMinMaxCurvatureCompute();
+            // RunStreamlineBuilder();
+            RunLIC();
         }
         // Curvature scale
         public void UpdateCurvatureScale(float curvatureScale)
         {
             _principalCurvatureCompute.SetFloat("_CurvatureScale", curvatureScale);
             RunCurvatureCompute();
-            RunMinMaxCurvatureCompute();
-            RunStreamlineBuilder();
+            // RunMinMaxCurvatureCompute();
+            // RunStreamlineBuilder();
+            RunLIC();
         }
         // Scale by curvature
         public void ScaleByCurvature(bool scaleByCurvature)
@@ -572,6 +571,9 @@ namespace Curvature
             // Material buffers
             _curvatureStreamlinesMaterial.SetBuffer("_DrawTriangles", _streamlineTriangleBuffer);
             _curvatureStreamlinesMaterial.SetBuffer("_LIC", _licBuffer);
+            _curvatureStreamlinesMaterial.SetVector("_Dimensions", (Vector3) _sdf.Dimensions);
+            _curvatureStreamlinesMaterial.SetVector("_VoxelSpacing", _sdf.VoxelSpacing);
+            _curvatureStreamlinesMaterial.SetVector("_VoxelStartPosition", _sdf.StartPosition);
             
             // Gradients buffers
             _gradientCompute.SetBuffer(_gradientKernel, "_Voxels", _voxelBuffer);
@@ -623,6 +625,8 @@ namespace Curvature
             
             // LIC buffers
             _licCompute.SetBuffer(_particlesKernel, "_WhiteNoise", _noiseBuffer);
+            _licCompute.SetBuffer(_particlesKernel, "_PoissonPointsCount", _poissonCountBuffer);
+            _licCompute.SetBuffer(_particlesKernel, "_PoissonPoints", _poissonBuffer);
             
             _licCompute.SetBuffer(_noiseKernel, "_Voxels", _voxelBuffer);
             _licCompute.SetBuffer(_noiseKernel, "_WhiteNoise", _noiseBuffer);
